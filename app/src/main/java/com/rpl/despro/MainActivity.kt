@@ -7,17 +7,19 @@ import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.nfc.NfcAdapter
 import android.nfc.Tag
-import android.nfc.NdefMessage
 import android.nfc.NdefRecord
 import android.nfc.tech.Ndef
-import java.nio.charset.Charset
 import android.os.Bundle
 import android.util.Log
+import android.widget.ProgressBar
 import android.widget.Toast
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
+import com.rpl.despro.Util.extractMessage
 
 class MainActivity : AppCompatActivity() {
+
+    private lateinit var progressBar: ProgressBar
 
     // ===== NFC =====
     private lateinit var nfcAdapter: NfcAdapter
@@ -52,12 +54,8 @@ class MainActivity : AppCompatActivity() {
             val host = service.host?.hostAddress ?: return
             val port = service.port
 
-            raspIP = "http://$host:$port"
-
-            showPopup("Raspberry Pi Found", raspIP ?: "Unknown address")
+            raspIP = "http://$host:$port/"
             Log.d("mDNS", "Resolved: $raspIP")
-
-            //stopMdnsDiscovery()
         }
 
         override fun onResolveFailed(serviceInfo: NsdServiceInfo?, errorCode: Int) {
@@ -70,6 +68,8 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContentView(R.layout.activity_main)
+
+        progressBar = findViewById(R.id.pgLoading)
 
         nfcAdapter = NfcAdapter.getDefaultAdapter(this)
 
@@ -88,6 +88,18 @@ class MainActivity : AppCompatActivity() {
         startMdnsDiscovery()
     }
 
+    private fun showLoading() {
+        runOnUiThread {
+            progressBar.visibility = android.view.View.VISIBLE
+        }
+    }
+
+    private fun hideLoading() {
+        runOnUiThread {
+            progressBar.visibility = android.view.View.GONE
+        }
+    }
+
     // ========== NFC HANDLING ==========
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
@@ -100,6 +112,7 @@ class MainActivity : AppCompatActivity() {
                 val text = readTextFromTag(tag)
                 if (text != null) {
                     showPopup("Scan Berhasil", text)
+                    callApi(text)
                 }
                 else {
                     showPopup("No Text Found", "Please input you're message into the NFC tag")
@@ -155,7 +168,6 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
-
             override fun onServiceLost(service: NsdServiceInfo) {
                 Log.d("mDNS", "Service lost: ${service.serviceName}")
             }
@@ -192,27 +204,50 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun callApi(nfcId: String) {
-        val base = raspIP ?: return
-        val url = "$base/tes?nfcId=$nfcId"
+        val url = "http://10.252.151.106:5000/api/scan-dispatch"
+        showLoading()
+
         Thread {
             try {
-                val result = java.net.URL(url).readText()
+                val jsonBody = """
+                {
+                  "batch-id": "$nfcId",
+                  "item_name": "Melon"
+                }
+            """.trimIndent()
 
-                runOnUiThread {
-                    Toast.makeText(
-                        this,
-                        "$result",
-                        Toast.LENGTH_LONG
-                    ).show()
+                val connection = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+                connection.requestMethod = "POST"
+                connection.setRequestProperty("Content-Type", "application/json")
+                connection.doOutput = true
+                connection.connectTimeout = 5000
+                connection.readTimeout = 5000
+
+                connection.outputStream.use { os ->
+                    os.write(jsonBody.toByteArray(Charsets.UTF_8))
                 }
 
-            } catch (e: Exception) {
+                val responseCode = connection.responseCode
+
+                val result = if (responseCode in 200..299) {
+                    connection.inputStream.bufferedReader().readText()
+                }
+                else {
+                    connection.errorStream?.bufferedReader()?.readText() ?: "Unknown error"
+                }
+
                 runOnUiThread {
-                    Toast.makeText(
-                        this,
-                        "API unreachable",
-                        Toast.LENGTH_LONG
-                    ).show()
+                    hideLoading()
+                    val message = extractMessage(result)
+                    showPopup("API Response", message)
+                }
+
+                connection.disconnect()
+            }
+            catch (e: Exception) {
+                runOnUiThread {
+                    hideLoading()
+                    showPopup("API Error", e.message ?: "Unknown error")
                 }
             }
         }.start()
