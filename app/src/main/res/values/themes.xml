@@ -1,0 +1,12 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <attr name="nfcIconColor" format="color"/>
+
+    <!-- Base application theme. -->
+    <style name="Base.Theme.Despro" parent="Theme.Material3.DayNight.NoActionBar">
+        <!-- Customize your light theme here. -->
+        <!-- <item name="colorPrimary">@color/my_light_primary</item> -->
+        <item name="nfcIconColor">@color/black</item>
+    </style>
+
+    <style name="Theme.Despro" parent="Base.Theme.Despro" />
+</resources>
