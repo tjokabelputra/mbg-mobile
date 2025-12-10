@@ -21,16 +21,18 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var progressBar: ProgressBar
 
-    // ===== NFC =====
+    // NFC
     private lateinit var nfcAdapter: NfcAdapter
     private lateinit var pendingIntent: PendingIntent
     private var isTagRead = false
 
-    // ===== mDNS =====
+    // MDNS and DDNS
     private var raspIP: String? = null
     private lateinit var nsdManager: NsdManager
     private lateinit var discoveryListener: NsdManager.DiscoveryListener
-    private val allowedPis = setOf("mypi", "mypi2", "mypi3")
+
+    private val discoveredPis = mutableMapOf<String, String>()
+    private var selectedPi: String? = null
 
     //Popup
     private fun showPopup(title: String, message: String) {
@@ -46,16 +48,50 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // Dialog to Select RasPi
+    private fun showPiSelector() {
+        if (discoveredPis.isEmpty()) return
+        if (raspIP != null) return
+
+        val names = discoveredPis.keys.toTypedArray()
+
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Select Raspberry Pi")
+            .setItems(names) { _, which ->
+                val name = names[which]
+                val chosenUrl = discoveredPis[name]
+
+                if (chosenUrl != null) {
+                    raspIP = chosenUrl
+                    selectedPi = name
+
+                    showPopup(
+                        "Connected",
+                        "Connected to: $name\n$chosenUrl"
+                    )
+
+                    Log.d("PI_ACTIVE", "Active Pi = $selectedPi @ $raspIP")
+                }
+            }
+            .setCancelable(false)
+            .show()
+    }
+
     private val resolveListener = object : NsdManager.ResolveListener {
 
         override fun onServiceResolved(service: NsdServiceInfo) {
-            if (raspIP != null) return
-
             val host = service.host?.hostAddress ?: return
             val port = service.port
+            val name = service.serviceName.lowercase()
 
-            raspIP = "http://$host:$port/"
-            Log.d("mDNS", "Resolved: $raspIP")
+            val url = "http://$host:$port/"
+            discoveredPis[name] = url
+
+            Log.d("mDNS", "Resolved: $name → $url")
+
+            runOnUiThread {
+                showPiSelector()
+            }
         }
 
         override fun onResolveFailed(serviceInfo: NsdServiceInfo?, errorCode: Int) {
@@ -100,22 +136,22 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ========== NFC HANDLING ==========
+    // NFC Handling
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
 
-        if (intent.action == NfcAdapter.ACTION_TAG_DISCOVERED ||
-            intent.action == NfcAdapter.ACTION_NDEF_DISCOVERED)
-        {
+        if (intent.action == NfcAdapter.ACTION_TAG_DISCOVERED || intent.action == NfcAdapter.ACTION_NDEF_DISCOVERED) {
             val tag: Tag? = intent.getParcelableExtra(NfcAdapter.EXTRA_TAG)
             if (tag != null) {
                 val text = readTextFromTag(tag)
                 if (text != null) {
-                    showPopup("Scan Berhasil", text)
                     callApi(text)
                 }
                 else {
-                    showPopup("No Text Found", "Please input you're message into the NFC tag")
+                    showPopup(
+                        "No Text Found",
+                        "Please input you're message into the NFC tag"
+                    )
                 }
             }
         }
@@ -158,11 +194,10 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onServiceFound(service: NsdServiceInfo) {
-
                 val name = service.serviceName.lowercase()
                 Log.d("mDNS", "Service found: $name")
 
-                if (service.serviceType == "_http._tcp." && name in allowedPis) {
+                if (service.serviceType == "_mbg._tcp.") {
                     Log.d("mDNS", "Resolving: $name")
                     nsdManager.resolveService(service, resolveListener)
                 }
@@ -170,6 +205,15 @@ class MainActivity : AppCompatActivity() {
 
             override fun onServiceLost(service: NsdServiceInfo) {
                 Log.d("mDNS", "Service lost: ${service.serviceName}")
+                val lostName = service.serviceName.lowercase()
+                discoveredPis.remove(lostName)
+
+                if (lostName == selectedPi) {
+                    raspIP = null
+                    selectedPi = null
+                    showPopup("Raspberry Pi Lost", "Connection to $lostName lost. Please re-select device.")
+                    showPiSelector()
+                }
             }
 
             override fun onDiscoveryStopped(serviceType: String) {
@@ -187,7 +231,11 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        nsdManager.discoverServices("_http._tcp.", NsdManager.PROTOCOL_DNS_SD, discoveryListener)
+        nsdManager.discoverServices(
+            "_mbg._tcp.",
+            NsdManager.PROTOCOL_DNS_SD,
+            discoveryListener
+        )
     }
 
     private fun stopMdnsDiscovery() {
@@ -204,17 +252,25 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun callApi(nfcId: String) {
-        val url = "http://10.252.151.106:5000/api/scan-dispatch"
+
+        if (raspIP == null) {
+            showPopup("No Raspberry Selected", "Please select a Raspberry Pi first.")
+            return
+        }
+
+        val url = raspIP + "api/scan-dispatch"
+        Log.d("API", "endpoint: ${url}")
+
         showLoading()
 
         Thread {
             try {
                 val jsonBody = """
-                {
-                  "batch-id": "$nfcId",
-                  "item_name": "Melon"
-                }
-            """.trimIndent()
+                    {
+                      "batch-id": "$nfcId",
+                      "item_name": "Melon"
+                    }
+                """.trimIndent()
 
                 val connection = java.net.URL(url).openConnection() as java.net.HttpURLConnection
                 connection.requestMethod = "POST"
