@@ -3,8 +3,6 @@ package com.rpl.despro
 import android.app.PendingIntent
 import android.content.Intent
 import android.content.IntentFilter
-import android.net.nsd.NsdManager
-import android.net.nsd.NsdServiceInfo
 import android.nfc.NfcAdapter
 import android.nfc.Tag
 import android.nfc.NdefRecord
@@ -15,169 +13,56 @@ import android.widget.ProgressBar
 import android.widget.Toast
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import com.google.android.material.floatingactionbutton.FloatingActionButton
 import com.rpl.despro.Util.extractMessage
 
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var progressBar: ProgressBar
-
-    // NFC
     private lateinit var nfcAdapter: NfcAdapter
     private lateinit var pendingIntent: PendingIntent
-    private var isTagRead = false
+    private lateinit var progressBar: ProgressBar
+    private lateinit var fabNetwork: FloatingActionButton
 
-    // MDNS and DDNS
     private var raspIP: String? = null
-    private lateinit var nsdManager: NsdManager
-    private lateinit var discoveryListener: NsdManager.DiscoveryListener
-
-    private val discoveredPis = mutableMapOf<String, String>()
     private var selectedPi: String? = null
-
-    //Popup
-    private fun showPopup(title: String, message: String) {
-        runOnUiThread {
-            androidx.appcompat.app.AlertDialog.Builder(this)
-                .setTitle(title)
-                .setMessage(message)
-                .setCancelable(false)
-                .setPositiveButton("OK") { dialog, _ ->
-                    dialog.dismiss()
-                }
-                .show()
-        }
-    }
-
-    // Dialog to Select RasPi
-    private fun showPiSelector() {
-        if (discoveredPis.isEmpty()) return
-        if (raspIP != null) return
-
-        val names = discoveredPis.keys.toTypedArray()
-
-        androidx.appcompat.app.AlertDialog.Builder(this)
-            .setTitle("Select Raspberry Pi")
-            .setItems(names) { _, which ->
-                val name = names[which]
-                val chosenUrl = discoveredPis[name]
-
-                if (chosenUrl != null) {
-                    raspIP = chosenUrl
-                    selectedPi = name
-
-                    showPopup(
-                        "Connected",
-                        "Connected to: $name\n$chosenUrl"
-                    )
-
-                    Log.d("PI_ACTIVE", "Active Pi = $selectedPi @ $raspIP")
-                }
-            }
-            .setCancelable(false)
-            .show()
-    }
-
-    private val resolveListener = object : NsdManager.ResolveListener {
-
-        override fun onServiceResolved(service: NsdServiceInfo) {
-            val host = service.host?.hostAddress ?: return
-            val port = service.port
-            val name = service.serviceName.lowercase()
-
-            val url = "http://$host:$port/"
-            discoveredPis[name] = url
-
-            Log.d("mDNS", "Resolved: $name → $url")
-
-            runOnUiThread {
-                showPiSelector()
-            }
-        }
-
-        override fun onResolveFailed(serviceInfo: NsdServiceInfo?, errorCode: Int) {
-            Log.e("mDNS", "Resolve failed: $errorCode")
-            showPopup("mDNS Error", "Resolve failed: $errorCode")
-        }
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContentView(R.layout.activity_main)
 
+        val toolbar = findViewById<com.google.android.material.appbar.MaterialToolbar>(R.id.topAppBar)
+        setSupportActionBar(toolbar)
+
+        setupEdgeToEdge()
+
         progressBar = findViewById(R.id.pgLoading)
+        fabNetwork = findViewById(R.id.fabNetwork)
 
         nfcAdapter = NfcAdapter.getDefaultAdapter(this)
-
         if (!nfcAdapter.isEnabled) {
             Toast.makeText(this, "Enable NFC", Toast.LENGTH_LONG).show()
         }
 
         pendingIntent = PendingIntent.getActivity(
-            this,
-            0,
+            this, 0,
             Intent(this, javaClass).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_MUTABLE
         )
 
-        nsdManager = getSystemService(NSD_SERVICE) as NsdManager
-        startMdnsDiscovery()
-    }
-
-    private fun showLoading() {
-        runOnUiThread {
-            progressBar.visibility = android.view.View.VISIBLE
+        fabNetwork.setOnClickListener {
+            startActivity(Intent(this, NetworkActivity::class.java))
         }
-    }
 
-    private fun hideLoading() {
-        runOnUiThread {
-            progressBar.visibility = android.view.View.GONE
-        }
-    }
-
-    // NFC Handling
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-
-        if (intent.action == NfcAdapter.ACTION_TAG_DISCOVERED ||
-            intent.action == NfcAdapter.ACTION_NDEF_DISCOVERED) {
-
-            val tag: Tag? = intent.getParcelableExtra(NfcAdapter.EXTRA_TAG)
-
-            if (tag != null) {
-
-                val tagId = tag.id.joinToString("") {
-                    String.format("%02X", it)
-                }
-
-                val text = readTextFromTag(tag)
-
-                if (text != null) {
-                    callApi(tagId, text)
-                }
-                else {
-                    showPopup("No Text Found", "NFC contains no text record")
-                }
-            }
-        }
-    }
-
-    private fun readTextFromTag(tag: Tag): String? {
-        val ndef = Ndef.get(tag) ?: return null
-
-        val ndefMessage = ndef.cachedNdefMessage ?: return null
-        val record = ndefMessage.records.firstOrNull() ?: return null
-
-        if(record.tnf != NdefRecord.TNF_WELL_KNOWN) return null
-        if(!record.type.contentEquals(NdefRecord.RTD_TEXT)) return null
-
-        return Util.parseNdefText(record.payload)
+        loadRaspberryFromStorage()
     }
 
     override fun onResume() {
         super.onResume()
-        isTagRead = false
+        loadRaspberryFromStorage()
+
         val filters = arrayOf(
             IntentFilter(NfcAdapter.ACTION_NDEF_DISCOVERED),
             IntentFilter(NfcAdapter.ACTION_TAG_DISCOVERED)
@@ -190,130 +75,111 @@ class MainActivity : AppCompatActivity() {
         nfcAdapter.disableForegroundDispatch(this)
     }
 
-    // ========== mDNS ==========
-    private fun startMdnsDiscovery() {
-
-        discoveryListener = object : NsdManager.DiscoveryListener {
-
-            override fun onDiscoveryStarted(serviceType: String) {
-                Log.d("mDNS", "Discovery started")
-            }
-
-            override fun onServiceFound(service: NsdServiceInfo) {
-                val name = service.serviceName.lowercase()
-                Log.d("mDNS", "Service found: $name")
-
-                if (service.serviceType == "_mbg._tcp.") {
-                    Log.d("mDNS", "Resolving: $name")
-                    nsdManager.resolveService(service, resolveListener)
-                }
-            }
-
-            override fun onServiceLost(service: NsdServiceInfo) {
-                Log.d("mDNS", "Service lost: ${service.serviceName}")
-                val lostName = service.serviceName.lowercase()
-                discoveredPis.remove(lostName)
-
-                if (lostName == selectedPi) {
-                    raspIP = null
-                    selectedPi = null
-                    showPopup("Raspberry Pi Lost", "Connection to $lostName lost. Please re-select device.")
-                    showPiSelector()
-                }
-            }
-
-            override fun onDiscoveryStopped(serviceType: String) {
-                Log.d("mDNS", "Discovery stopped")
-            }
-
-            override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
-                Log.e("mDNS", "Discovery start failed: $errorCode")
-                nsdManager.stopServiceDiscovery(this)
-            }
-
-            override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {
-                Log.e("mDNS", "Discovery stop failed: $errorCode")
-                nsdManager.stopServiceDiscovery(this)
-            }
-        }
-
-        nsdManager.discoverServices(
-            "_mbg._tcp.",
-            NsdManager.PROTOCOL_DNS_SD,
-            discoveryListener
-        )
-    }
-
-    private fun stopMdnsDiscovery() {
-        try {
-            nsdManager.stopServiceDiscovery(discoveryListener)
-        } catch (e: Exception) {
-            Log.w("mDNS", "Discovery already stopped")
+    private fun setupEdgeToEdge() {
+        ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main)) { v, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            v.setPadding(bars.left, 0, bars.right, bars.bottom)
+            findViewById<com.google.android.material.appbar.MaterialToolbar>(R.id.topAppBar)
+                ?.setPadding(0, bars.top, 0, 0)
+            insets
         }
     }
 
-    override fun onStop() {
-        super.onStop()
-        stopMdnsDiscovery()
+    // Storage
+    private fun loadRaspberryFromStorage() {
+        val prefs = getSharedPreferences("raspberry_config", MODE_PRIVATE)
+        raspIP = prefs.getString("PI_URL", null)
+        selectedPi = prefs.getString("PI_NAME", null)
+
+        Log.d("LOCAL", "Loaded Pi: $selectedPi @ $raspIP")
     }
 
-    private fun callApi(nfcId: String, item: String) {
+    // NFC
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+
+        if (intent.action == NfcAdapter.ACTION_TAG_DISCOVERED ||
+            intent.action == NfcAdapter.ACTION_NDEF_DISCOVERED) {
+
+            val tag = intent.getParcelableExtra<Tag>(NfcAdapter.EXTRA_TAG) ?: return
+
+            val tagId = tag.id.joinToString("") { "%02X".format(it) }
+            val text = readTextFromTag(tag) ?: return
+
+            sendToApi(tagId, text)
+        }
+    }
+
+    private fun readTextFromTag(tag: Tag): String? {
+        val ndef = Ndef.get(tag) ?: return null
+        val message = ndef.cachedNdefMessage ?: return null
+        val record = message.records.firstOrNull() ?: return null
+
+        if (record.tnf != NdefRecord.TNF_WELL_KNOWN) return null
+        if (!record.type.contentEquals(NdefRecord.RTD_TEXT)) return null
+
+        return Util.parseNdefText(record.payload)
+    }
+
+    // API
+    private fun sendToApi(nfcId: String, item: String) {
 
         if (raspIP == null) {
-            showPopup("No Raspberry Selected", "Please select a Raspberry Pi first.")
+            showPopup("No Raspberry Pi", "Open Network screen and connect first")
             return
         }
 
         val url = raspIP + "api/scan-dispatch"
-        Log.d("API", "endpoint: ${url}")
-
+        Log.d("API", url)
         showLoading()
 
         Thread {
             try {
-                val jsonBody = """
+                val json = """
                     {
-                      "batch_id": "$nfcId",
+                      "nfc_id": "$nfcId",
                       "item_name": "$item"
                     }
                 """.trimIndent()
 
-                Log.d("API", jsonBody)
+                val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.doOutput = true
 
-                val connection = java.net.URL(url).openConnection() as java.net.HttpURLConnection
-                connection.requestMethod = "POST"
-                connection.setRequestProperty("Content-Type", "application/json")
-                connection.doOutput = true
-                connection.connectTimeout = 5000
-                connection.readTimeout = 5000
+                conn.outputStream.use { it.write(json.toByteArray()) }
 
-                connection.outputStream.use { os ->
-                    os.write(jsonBody.toByteArray(Charsets.UTF_8))
-                }
-
-                val responseCode = connection.responseCode
-
-                val result = if (responseCode in 200..299) {
-                    connection.inputStream.bufferedReader().readText()
-                }
-                else {
-                    connection.errorStream?.bufferedReader()?.readText() ?: "Unknown error"
-                }
+                val response = if (conn.responseCode in 200..299)
+                    conn.inputStream.bufferedReader().readText()
+                else
+                    conn.errorStream?.bufferedReader()?.readText() ?: "Unknown error"
 
                 runOnUiThread {
                     hideLoading()
-                    val message = extractMessage(result)
-                    showPopup("API Response", message)
+                    showPopup("Response", extractMessage(response))
                 }
 
-                connection.disconnect()
-            }
-            catch (e: Exception) {
+                conn.disconnect()
+
+            } catch (e: Exception) {
                 runOnUiThread {
                     hideLoading()
-                    showPopup("API Error", e.message ?: "Unknown error")
+                    showPopup("Error", e.message ?: "Unknown")
                 }
             }
         }.start()
+    }
+
+    private fun showLoading() { progressBar.visibility = ProgressBar.VISIBLE }
+    private fun hideLoading() { progressBar.visibility = ProgressBar.GONE }
+
+    private fun showPopup(title: String, msg: String) {
+        runOnUiThread {
+            androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle(title)
+                .setMessage(msg)
+                .setPositiveButton("OK", null)
+                .show()
+        }
     }
 }
