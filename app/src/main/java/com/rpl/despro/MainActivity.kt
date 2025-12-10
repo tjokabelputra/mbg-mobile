@@ -140,18 +140,24 @@ class MainActivity : AppCompatActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
 
-        if (intent.action == NfcAdapter.ACTION_TAG_DISCOVERED || intent.action == NfcAdapter.ACTION_NDEF_DISCOVERED) {
+        if (intent.action == NfcAdapter.ACTION_TAG_DISCOVERED ||
+            intent.action == NfcAdapter.ACTION_NDEF_DISCOVERED) {
+
             val tag: Tag? = intent.getParcelableExtra(NfcAdapter.EXTRA_TAG)
+
             if (tag != null) {
+
+                val tagId = tag.id.joinToString("") {
+                    String.format("%02X", it)
+                }
+
                 val text = readTextFromTag(tag)
+
                 if (text != null) {
-                    callApi(text)
+                    callApi(tagId, text)
                 }
                 else {
-                    showPopup(
-                        "No Text Found",
-                        "Please input you're message into the NFC tag"
-                    )
+                    showPopup("No Text Found", "NFC contains no text record")
                 }
             }
         }
@@ -251,7 +257,7 @@ class MainActivity : AppCompatActivity() {
         stopMdnsDiscovery()
     }
 
-    private fun callApi(nfcId: String) {
+    private fun callApi(nfcId: String, item: String) {
 
         if (raspIP == null) {
             showPopup("No Raspberry Selected", "Please select a Raspberry Pi first.")
@@ -267,10 +273,12 @@ class MainActivity : AppCompatActivity() {
             try {
                 val jsonBody = """
                     {
-                      "batch-id": "$nfcId",
-                      "item_name": "Melon"
+                      "batch_id": "$nfcId",
+                      "item_name": "$item"
                     }
                 """.trimIndent()
+
+                Log.d("API", jsonBody)
 
                 val connection = java.net.URL(url).openConnection() as java.net.HttpURLConnection
                 connection.requestMethod = "POST"

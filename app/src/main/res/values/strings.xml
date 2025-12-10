@@ -1,3 +1,8 @@
 <resources>
     <string name="app_name">Despro</string>
+    <string name="service_name">Service Name</string>
+    <string name="name">Name</string>
+    <string name="please_tap_nfc_here">Please Tap NFC Here</string>
+    <string name="service_ip_address_and_port">Service IP Address and Port</string>
+    <string name="ip_and_port">IP and Port</string>
 </resources>
